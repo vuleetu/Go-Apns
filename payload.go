@@ -21,6 +21,18 @@ type Aps struct {
 	Sound       string `json:"sound,omitempty"`
 }
 
+type msgAps struct {
+	Alert       string `json:"alert,omitempty"`
+	Badge       int    `json:"badge,omitempty"`
+	Sound       string `json:"sound,omitempty"`
+}
+
+type alertAps struct {
+	AlertStruct *Alert `json:"alert,omitempty"`
+	Badge       int    `json:"badge,omitempty"`
+	Sound       string `json:"sound,omitempty"`
+}
+
 type Payload struct {
 	Aps Aps
 
@@ -50,9 +62,22 @@ func (l Payload) MarshalJSON() ([]byte, error) {
 	if l.customProperty == nil {
 		l.customProperty = make(map[string]interface{})
 	}
+
+    var finalAps interface{}
 	if l.Aps.AlertStruct != nil {
-		l.Aps.Alert = ""
-	}
-	l.customProperty["aps"] = l.Aps
+        m := alertAps{}
+        m.AlertStruct = l.Aps.AlertStruct
+        m.Badge = l.Aps.Badge
+        m.Sound = l.Aps.Sound
+        finalAps = m
+	} else {
+        m := msgAps{}
+        m.Alert = l.Aps.Alert
+        m.Badge = l.Aps.Badge
+        m.Sound = l.Aps.Sound
+        finalAps = m
+    }
+
+	l.customProperty["aps"] = finalAps
 	return json.Marshal(l.customProperty)
 }
