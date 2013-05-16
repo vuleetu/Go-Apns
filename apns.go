@@ -71,7 +71,8 @@ func (a *Apn) Send(notification *Notification) error {
 		err: err,
 	}
 	a.sendChan <- arg
-	return <-err
+	//return <-err
+	return nil
 }
 
 type sendArg struct {
@@ -140,14 +141,40 @@ func (a *Apn) send(notification *Notification) error {
 }
 
 func sendLoop(apn *Apn) {
+    c := make([]*sendArg, 0, 100)
+
+    recvChan := make(chan *sendArg)
+
+    go sendLoop1(apn, recvChan)
+
+    for {
+        if len(c) > 0 {
+            select {
+            case arg := <- apn.sendChan:
+                c = append(c, arg)
+            case recvChan <- c[0]:
+                c = c[1:]
+            }
+        } else {
+            arg := <- apn.sendChan
+            c = append(c, arg)
+        }
+    }
+
+    fmt.Errorf("notification channel closed")
+}
+
+func sendLoop1(apn *Apn, recvChan <-chan *sendArg) {
 	for {
-		arg := <-apn.sendChan
+		arg := <-recvChan
+        fmt.Println("received notification from channel")
 		quit, err := apn.connect()
 		if err != nil {
-			arg.err <- err
+			//arg.err <- err
 			continue
 		}
-		arg.err <- apn.send(arg.n)
+		//arg.err <- apn.send(arg.n)
+		apn.send(arg.n)
 
 		for connected := true; connected; {
 			select {
@@ -155,8 +182,10 @@ func sendLoop(apn *Apn) {
 				connected = false
 			case <-time.After(apn.timeout):
 				connected = false
-			case arg := <-apn.sendChan:
-				arg.err <- apn.send(arg.n)
+			case arg := <-recvChan:
+                fmt.Println("received notification from channel")
+				//arg.err <- apn.send(arg.n)
+				apn.send(arg.n)
 			}
 		}
 
