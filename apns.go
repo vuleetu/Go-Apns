@@ -9,7 +9,35 @@ import (
 	"fmt"
 	"net"
 	"time"
+    "errors"
 )
+
+var WRITE_FAILED = errors.New("Write data to apns failed")
+
+type Logger interface {
+    Info(...interface{})
+    Debug(...interface{})
+    Warn(...interface{})
+    Error(...interface{})
+}
+
+type Stdlog byte
+
+func (*Stdlog) Info(args ...interface{}) {
+    fmt.Println(args...)
+}
+
+func (*Stdlog) Debug(args ...interface{}) {
+    fmt.Println(args...)
+}
+
+func (*Stdlog) Warn(args ...interface{}) {
+    fmt.Println(args...)
+}
+
+func (*Stdlog) Error(args ...interface{}) {
+    fmt.Println(args...)
+}
 
 type Notification struct {
 	DeviceToken        string
@@ -21,66 +49,19 @@ type Notification struct {
 
 // An Apn contain a ErrorChan channle when connected to apple server. When a notification sent wrong, you can get the error infomation from this channel.
 type Apn struct {
-	ErrorChan <-chan NotificationError
-
 	server  string
 	conf    *tls.Config
-	conn    *tls.Conn
-	timeout time.Duration
-
 	sendChan  chan *sendArg
-	errorChan chan NotificationError
+    log Logger
 }
 
-// New Apn with cert_filename and key_filename.
-func New(cert_filename, key_filename, server string, timeout time.Duration) (*Apn, error) {
-	echan := make(chan NotificationError)
-
-	cert, err := tls.LoadX509KeyPair(cert_filename, key_filename)
-	if err != nil {
-		return nil, err
-	}
-
-	certificate := []tls.Certificate{cert}
-	conf := &tls.Config{
-		Certificates: certificate,
-	}
-
-	ret := &Apn{
-		ErrorChan: echan,
-		server:    server,
-		conf:      conf,
-		timeout:   timeout,
-		sendChan:  make(chan *sendArg),
-		errorChan: echan,
-	}
-
-	go sendLoop(ret)
-	return ret, err
+type ApnConn struct {
+    conn *tls.Conn
+    log Logger
 }
 
-func (a *Apn) GetErrorChan() <-chan NotificationError {
-	return a.ErrorChan
-}
-
-// Send a notification to iOS
-func (a *Apn) Send(notification *Notification) error {
-	err := make(chan error)
-	arg := &sendArg{
-		n:   notification,
-		err: err,
-	}
-	a.sendChan <- arg
-	//return <-err
-	return nil
-}
-
-type sendArg struct {
-	n   *Notification
-	err chan<- error
-}
-
-func (a *Apn) Close() error {
+func (a *ApnConn) Close() error {
+    a.log.Info("Close connection now")
 	if a.conn == nil {
 		return nil
 	}
@@ -89,32 +70,7 @@ func (a *Apn) Close() error {
 	return conn.Close()
 }
 
-func (a *Apn) connect() (<-chan int, error) {
-	// make sure last readError(...) will fail when reading.
-	err := a.Close()
-	if err != nil {
-		return nil, fmt.Errorf("close last connection failed: %s", err)
-	}
-
-	conn, err := net.Dial("tcp", a.server)
-	if err != nil {
-		return nil, fmt.Errorf("connect to server error: %d", err)
-	}
-
-	var client_conn *tls.Conn = tls.Client(conn, a.conf)
-	err = client_conn.Handshake()
-	if err != nil {
-		return nil, fmt.Errorf("handshake server error: %s", err)
-	}
-
-	a.conn = client_conn
-	quit := make(chan int)
-	go readError(client_conn, quit, a.errorChan)
-
-	return quit, nil
-}
-
-func (a *Apn) send(notification *Notification) error {
+func (a *ApnConn) Send(notification *Notification) error {
 	tokenbin, err := hex.DecodeString(notification.DeviceToken)
 	if err != nil {
 		return fmt.Errorf("convert token to hex error: %s", err)
@@ -135,9 +91,69 @@ func (a *Apn) send(notification *Notification) error {
 
 	_, err = a.conn.Write(pushPackage)
 	if err != nil {
-		return fmt.Errorf("write socket error: %s", err)
+		a.log.Error("write socket error:", err)
+        return WRITE_FAILED
 	}
 	return nil
+}
+
+
+// New Apn with cert_filename and key_filename.
+func New(cert_filename, key_filename, server string, timeout time.Duration) (*Apn, error) {
+	cert, err := tls.LoadX509KeyPair(cert_filename, key_filename)
+	if err != nil {
+		return nil, err
+	}
+
+	certificate := []tls.Certificate{cert}
+	conf := &tls.Config{
+		Certificates: certificate,
+	}
+
+    stdlog := Stdlog(1)
+	ret := &Apn{
+		server:    server,
+		conf:      conf,
+		sendChan:  make(chan *sendArg),
+        log: &stdlog,
+	}
+
+	go sendLoop(ret)
+	return ret, err
+}
+
+// Send a notification to iOS
+func (a *Apn) Send(notification *Notification) error {
+	err := make(chan error)
+	arg := &sendArg{
+		n:   notification,
+		err: err,
+	}
+	a.sendChan <- arg
+	return nil
+}
+
+type sendArg struct {
+	n   *Notification
+	err chan<- error
+}
+
+func (a *Apn) NewApnConn() (*ApnConn, error) {
+	conn, err := net.Dial("tcp", a.server)
+	if err != nil {
+		return nil, fmt.Errorf("connect to server error: %d", err)
+	}
+
+	var client_conn *tls.Conn = tls.Client(conn, a.conf)
+	err = client_conn.Handshake()
+	if err != nil {
+		return nil, fmt.Errorf("handshake server error: %s", err)
+	}
+
+    apn_conn := &ApnConn{client_conn, a.log}
+	//go readError(apn_conn)
+
+    return apn_conn, nil
 }
 
 func sendLoop(apn *Apn) {
@@ -145,7 +161,7 @@ func sendLoop(apn *Apn) {
 
     recvChan := make(chan *sendArg)
 
-    go sendLoop1(apn, recvChan)
+    go sendLoop0(apn, recvChan)
 
     for {
         if len(c) > 0 {
@@ -161,51 +177,62 @@ func sendLoop(apn *Apn) {
         }
     }
 
-    fmt.Errorf("notification channel closed")
+    apn.log.Error("Fatal, Notification channel closed")
 }
 
-func sendLoop1(apn *Apn, recvChan <-chan *sendArg) {
-	for {
-		arg := <-recvChan
-        fmt.Println("received notification from channel")
-		quit, err := apn.connect()
-		if err != nil {
-			//arg.err <- err
-			continue
-		}
-		//arg.err <- apn.send(arg.n)
-		apn.send(arg.n)
-
-		for connected := true; connected; {
-			select {
-			case <-quit:
-				connected = false
-			case <-time.After(apn.timeout):
-				connected = false
-			case arg := <-recvChan:
-                fmt.Println("received notification from channel")
-				//arg.err <- apn.send(arg.n)
-				apn.send(arg.n)
-			}
-		}
-
-		err = apn.Close()
-		if err != nil {
-			e := NewNotificationError(nil, err)
-			apn.errorChan <- e
-		}
-	}
+func sendLoop0(apn *Apn, recvChan <-chan *sendArg) {
+    //maximum pool size
+    pool := make(chan byte, 100)
+    for {
+        apn.log.Info("Waiting for new notification, current pool size is", len(pool))
+        arg := <-recvChan
+        apn.log.Info("Received notification from channel, device:", arg.n.DeviceToken)
+        pool <- 1
+        apn.log.Info("Create new goroutine to send notication")
+        go sendLoop1(pool, apn, arg)
+    }
 }
 
-func readError(conn *tls.Conn, quit chan<- int, c chan<- NotificationError) {
+func sendLoop1(pool <-chan byte, apn *Apn, arg *sendArg) {
+    defer func() {
+        <-pool
+    }()
+
+    for {
+        apn.log.Info("Connecting to apns")
+        apnconn, err := apn.NewApnConn()
+        if err != nil {
+            apnconn.Close()
+            apn.log.Error("Connect to apns failed", err)
+            time.Sleep(5*time.Second)
+            continue
+        }
+
+        apnconn.log.Info("Connected to apns success")
+        apnconn.log.Info("Sending data to apns")
+        err = apnconn.Send(arg.n)
+        if err != WRITE_FAILED {
+            apn.log.Info("Sending data to apns success")
+            apnconn.Close()
+            break
+        }
+        apnconn.log.Info("Write data to apns failed, reconnecting now")
+        apnconn.Close()
+    }
+
+    apn.log.Info("Send notification success")
+}
+
+func readError(a *ApnConn) {
 	p := make([]byte, 6, 6)
-	for {
-		n, err := conn.Read(p)
-		e := NewNotificationError(p[:n], err)
-		c <- e
-		if err != nil {
-			quit <- 1
-			return
-		}
-	}
+    a.log.Info("Reading error data from apns")
+    n, err := a.conn.Read(p)
+    if err != nil {
+        a.log.Warn("Read data from apns failed:", err)
+        return
+    }
+
+    a.log.Info("Reading error data from apns success", p[:n])
+    //there is something wrong, so we need to log it
+    a.log.Error(NewNotificationError(p[:n], err))
 }

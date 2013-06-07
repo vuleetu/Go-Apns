@@ -59,7 +59,7 @@ func (e *NotificationError) Error() string {
 	default:
 		status = "None (unknown)"
 	}
-	return fmt.Sprintf("%s(%d): id(%x)", status, e.Status, e.Identifier)
+	return fmt.Sprintf("%s(%d): id(%d)", status, e.Status, e.Identifier)
 }
 
 func (e *NotificationError) String() string {
