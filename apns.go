@@ -122,6 +122,10 @@ func New(cert_filename, key_filename, server string, timeout time.Duration) (*Ap
 	return ret, err
 }
 
+func (a *Apn) SetLogger(l Logger) {
+    a.log = l
+}
+
 // Send a notification to iOS
 func (a *Apn) Send(notification *Notification) error {
 	err := make(chan error)
