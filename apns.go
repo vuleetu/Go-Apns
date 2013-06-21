@@ -206,7 +206,6 @@ func sendLoop1(pool <-chan byte, apn *Apn, arg *sendArg) {
         apn.log.Info("Connecting to apns")
         apnconn, err := apn.NewApnConn()
         if err != nil {
-            apnconn.Close()
             apn.log.Error("Connect to apns failed", err)
             time.Sleep(5*time.Second)
             continue
